@@ -3,8 +3,8 @@
 
 #include "queue.h"
 #include "riscv.h"
-#include "vm.h"
 #include "signal/ksignal.h"
+#include "vm.h"
 
 enum {
     STDIN  = 0,

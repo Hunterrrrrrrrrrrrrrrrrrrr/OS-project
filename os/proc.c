@@ -287,7 +287,7 @@ int wait(int pid, int __user *code) {
                     if (code) {
                         acquire(&p->mm->lock);
                         int exit_code = child->exit_code;
-                        copy_to_user(p->mm, (uint64)code, (char*)&exit_code, sizeof(int));
+                        copy_to_user(p->mm, (uint64)code, (char *)&exit_code, sizeof(int));
                         release(&p->mm->lock);
                     }
                     freeproc(child);
@@ -382,7 +382,8 @@ int kill(int pid) {
 void setkilled(struct proc *p, int reason) {
     assert(reason < 0);
     acquire(&p->lock);
-    p->killed = reason;
+    p->killed    = reason;
+    p->exit_code = reason;
     release(&p->lock);
 }
 

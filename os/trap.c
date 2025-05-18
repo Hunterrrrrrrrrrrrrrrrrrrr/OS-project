@@ -5,9 +5,9 @@
 #include "defs.h"
 #include "loader.h"
 #include "plic.h"
+#include "signal/ksignal.h"
 #include "syscall.h"
 #include "timer.h"
-#include "signal/ksignal.h"
 
 static int64 kp_print_lock = 0;
 extern volatile int panicked;
@@ -141,7 +141,7 @@ static void handle_pgfault(void) {
             // - Store PageFault  : Missing A/D bit
             *pte |= PTE_A;
             if (cause == StorePageFault)
-                *pte |= PTE_D;    
+                *pte |= PTE_D;
             return;
         }
     }

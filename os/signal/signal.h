@@ -28,11 +28,11 @@ typedef struct siginfo {
     int si_code;
     int si_pid;
     int si_status;
-    void* addr;
+    void *addr;
 } siginfo_t;
 
 struct sigaction {
-    void (*sa_sigaction)(int, siginfo_t*, void *);
+    void (*sa_sigaction)(int, siginfo_t *, void *);
     sigset_t sa_mask;
     void (*sa_restorer)(void);
 };
@@ -46,8 +46,8 @@ struct ucontext {
 };
 
 // sigaction:
-#define SIG_DFL  ((void *)0)
-#define SIG_IGN  ((void *)1)
+#define SIG_DFL ((void *)0)
+#define SIG_IGN ((void *)1)
 
 // used in sigprocmask
 #define SIG_BLOCK   1
