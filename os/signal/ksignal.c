@@ -23,6 +23,21 @@ int siginit(struct proc *p) {
     //     p->signal.sa[i].sa_mask      = 0;
     //     p->signal.sa[i].sa_restorer  = 0;
     // }
+
+    for (int signo = SIGMIN; signo <= SIGMAX; signo++) {
+        p->signal.sa[signo].sa_sigaction = SIG_DFL;
+        sigemptyset(&p->signal.sa[signo].sa_mask);
+        p->signal.sa[signo].sa_restorer = NULL;
+        
+        // 初始化siginfo为0
+        memset(&p->signal.siginfos[signo], 0, sizeof(siginfo_t));
+        p->signal.siginfos[signo].si_signo = signo; // 设置信号编号
+    }
+
+    // 清空信号掩码和待处理信号集
+    sigemptyset(&p->signal.sigmask);
+    sigemptyset(&p->signal.sigpending);
+
     return 0;
 }
 
@@ -31,6 +46,17 @@ int siginit_fork(struct proc *parent, struct proc *child) {
     // memcpy(&child->signal.sa, &parent->signal.sa, sizeof(parent->signal.sa));
     // child->signal.sigmask    = parent->signal.sigmask;
     // child->signal.sigpending = 0;
+    // 1. 复制父进程的所有信号处理方式
+    for (int signo = SIGMIN; signo <= SIGMAX; signo++) {
+        child->signal.sa[signo] = parent->signal.sa[signo];
+    }
+
+    // 2. 继承父进程的信号屏蔽字
+    child->signal.sigmask = parent->signal.sigmask;
+
+    // 3. 清空子进程的待处理信号集（不继承父进程的pending信号）
+    sigemptyset(&child->signal.sigpending);
+
     return 0;
 }
 
