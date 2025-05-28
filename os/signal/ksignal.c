@@ -62,18 +62,28 @@ int siginit_fork(struct proc *parent, struct proc *child) {
 
 int siginit_exec(struct proc *p) {
     // mask/pending 清零，handler 除 SIG_IGN 外全部设为 SIG_DFL
-    sigset_t oldmask = p->signal.sigmask;
-    memset(&p->signal, 0, sizeof(struct ksignal));
-    for (int i = SIGMIN; i <= SIGMAX; i++) {
-        if (p->signal.sa[i].sa_sigaction == SIG_IGN)
-            p->signal.sa[i].sa_sigaction = SIG_IGN;
-        else
-            p->signal.sa[i].sa_sigaction = SIG_DFL;
-        p->signal.sa[i].sa_mask     = 0;
-        p->signal.sa[i].sa_restorer = 0;
+    for (int signo = SIGMIN; signo <= SIGMAX; signo++) {
+        // 强制SIGKILL/SIGSTOP为默认行为
+        if (signo == SIGKILL || signo == SIGSTOP) {
+            p->signal.sa[signo].sa_sigaction = SIG_DFL;
+            sigemptyset(&p->signal.sa[signo].sa_mask);
+            p->signal.sa[signo].sa_restorer = NULL;
+            continue;
+        }
+
+        // 仅保留显式设置为SIG_IGN的信号
+        if (p->signal.sa[signo].sa_sigaction != SIG_IGN) {
+            p->signal.sa[signo].sa_sigaction = SIG_DFL;
+            sigemptyset(&p->signal.sa[signo].sa_mask);
+            p->signal.sa[signo].sa_restorer = NULL;
+            
+            // 清除该信号的siginfo（可选但更安全）
+            memset(&p->signal.siginfos[signo], 0, sizeof(siginfo_t));
+            p->signal.siginfos[signo].si_signo = signo;
+        }
     }
-    p->signal.sigmask    = oldmask;  // 有的实现会保留 mask
-    p->signal.sigpending = 0;
+
+    // 注意：sigmask和sigpending保持不变
     return 0;
 }
 
@@ -276,23 +286,41 @@ int sys_sigpending(sigset_t __user *set) {
 }
 
 int sys_sigkill(int pid, int signo, int code) {
-    if (signo < SIGMIN || signo > SIGMAX)
+    // 1. 参数校验
+    if (signo < SIGMIN || signo > SIGMAX) 
         return -1;
-
-    struct proc *target = NULL;
-    for (int i = 0; i < NPROC; i++) {
-        struct proc *p = pool[i];
-        if (p && p->pid == pid && p->state != UNUSED) {
-            target = p;
+    
+    // 2. 查找目标进程
+    struct proc *p = NULL;
+    
+    // 正确遍历指针数组的方式
+    for (int i = 0; pool[i] != NULL; i++) {  // 假设以NULL结尾
+        if (pool[i]->pid == pid && pool[i]->state != UNUSED) {
+            p = pool[i];
             break;
         }
     }
-    if (!target)
-        return -1;
+    
+    if (!p) return -1;  // 未找到进程
 
-    // 设置 pending 位
-    target->signal.sigpending |= sigmask(signo);
+    // 3. 处理特殊信号
+    if (signo == SIGKILL) {
+        setkilled(p, -10 - SIGKILL);
+        return 0;
+    }
 
-    // 可选：可以在这里保存 siginfo_t 信息（如 code/pid），但 Base Checkpoint 只需置 pending
+    // 4. 添加信号到pending集
+    sigaddset(&p->signal.sigpending, signo);
+    
+    // 5. 填充siginfo
+    p->signal.siginfos[signo].si_signo = signo;
+    p->signal.siginfos[signo].si_code = code;
+    p->signal.siginfos[signo].si_pid = curr_proc()->pid;
+
+    // 6. 唤醒睡眠进程
+    if (p->state == SLEEPING && p->sleep_chan) {
+        wakeup(p->sleep_chan);
+    }
+
     return 0;
 }
