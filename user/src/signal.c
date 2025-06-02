@@ -18,6 +18,7 @@ struct test {
     {basic10, "basic10"},
     {basic11, "basic11"},
     {basic20, "basic20"},
+    {basic30, "basic30"}, // 新增测试用例
     {NULL,    NULL     },
 };
 
