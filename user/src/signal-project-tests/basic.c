@@ -362,3 +362,64 @@ void basic20(char *s) {
         assert(ret == 1); // child should not be terminated by SIGUSR0
     }
 }
+
+volatile int stopcont_flag = 0;
+
+void stopcont_handler(int signo, siginfo_t* info, void* ctx2) {
+    if (signo == SIGUSR0) {
+        fprintf(1, "Child process received SIGUSR0\n");
+        stopcont_flag = 1;
+    }
+}
+
+// 测试SIGSTOP和SIGCONT基本功能
+void basic30(char* s) {
+    int pid = fork();
+    if (pid == 0) {
+        // child
+        // 设置SIGUSR0处理函数
+        sigaction_t sa = {
+            .sa_sigaction = stopcont_handler,
+            .sa_restorer  = sigreturn,
+        };
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGUSR0, &sa, 0);
+        
+        fprintf(1, "Child process started\n");
+        
+        // 等待父进程发送SIGUSR0
+        while (stopcont_flag == 0) {
+            // fprintf(1, "waiting for SIGCONT");
+            sleep(1);
+        }
+        
+        fprintf(1, "Child process continuing after SIGUSR0\n");
+        exit(130);
+    } else {
+        // parent
+        sleep(5); 
+        
+        fprintf(1, "Parent sending SIGSTOP to child\n");
+        sigkill(pid, SIGSTOP, 0);
+        
+        // 检查子进程确实停止了
+        sleep(5);
+
+        
+        // 2. 发送SIGUSR0，子进程应该收不到(因为它被停止了)
+        fprintf(1, "Parent sending SIGUSR0 to stopped child\n");
+        sigkill(pid, SIGUSR0, 0);
+        sleep(2);
+        
+        // 3. 恢复子进程
+        fprintf(1, "Parent sending SIGCONT to child\n");
+        sigkill(pid, SIGCONT, 0);
+        
+        // 现在子进程应该能收到SIGUSR0并继续执行
+        int ret_status;
+        wait(0, &ret_status);
+        assert_eq(ret_status, 130);
+        
+        fprintf(1, "SIGSTOP/SIGCONT test passed\n");
+    }
+}
