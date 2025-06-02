@@ -97,19 +97,42 @@ int do_signal(void) {
             sigaction_t *act = &p->signal.sa[signo];
             // SIGKILL/SIGSTOP不能被捕获/忽略
             if (signo == SIGKILL || signo == SIGSTOP) {
-                setkilled(p, -10 - signo);
-                p->signal.sigpending &= ~mask;
-                return 1;
+                if (signo == SIGSTOP) {
+                    // 暂停进程
+                    acquire(&p->lock);  // 加锁
+                    p->state = SLEEPING;
+                    sigdelset(&p->signal.sigpending, signo);
+                    release(&p->lock);  // 解锁
+                    yield();  // 让出CPU
+                    return 0;
+                } else {
+                    // SIGKILL 处理（原有代码）
+                    setkilled(p, -10 - signo);
+                    sigdelset(&p->signal.sigpending, signo);
+                    return 1;
+                }
+            }
+            // 处理 SIGCONT 信号
+            if (signo == SIGCONT) {
+                // 如果进程处于暂停状态，则恢复运行
+                acquire(&p->lock);  // 加锁
+                if (p->state == SLEEPING) {
+                    p->state = RUNNABLE;
+                    wakeup(p);  // 唤醒进程
+                }
+                sigdelset(&p->signal.sigpending, signo);  // 清除待处理标志
+                release(&p->lock);  // 解锁
+                return 0;
             }
             // 忽略
             if (act->sa_sigaction == SIG_IGN) {
-                p->signal.sigpending &= ~mask;
+                sigdelset(&p->signal.sigpending, signo);
                 continue;
             }
             // 默认
             if (act->sa_sigaction == SIG_DFL) {
                 setkilled(p, -10 - signo);
-                p->signal.sigpending &= ~mask;
+                sigdelset(&p->signal.sigpending, signo);
                 return 1;
             }
             // 用户自定义 handler
@@ -119,7 +142,7 @@ int do_signal(void) {
             // 4. 更新 mask
             // 5. 清 pending
             setup_signal_handler(p, signo, act);
-            p->signal.sigpending &= ~mask;
+            sigdelset(&p->signal.sigpending, signo);
             return 1;
         }
     }
@@ -271,6 +294,10 @@ int sys_sigprocmask(int how, const sigset_t __user *set, sigset_t __user *oldset
             default:
                 return -1;
         }
+
+        // 确保 SIGKILL 和 SIGSTOP 永远不会被屏蔽
+        sigdelset(&p->signal.sigmask, SIGKILL);
+        sigdelset(&p->signal.sigmask, SIGSTOP);
     }
     return 0;
 }
@@ -304,8 +331,33 @@ int sys_sigkill(int pid, int signo, int code) {
     if (!p) return -1;  // 未找到进程
 
     // 3. 处理特殊信号
-    if (signo == SIGKILL) {
-        setkilled(p, -10 - SIGKILL);
+    if (signo == SIGKILL || signo == SIGSTOP) {
+        // SIGKILL 和 SIGSTOP 立即生效，不进入pending队列
+        if (signo == SIGKILL) {
+            setkilled(p, -10 - SIGKILL);
+        } else if (signo == SIGSTOP) {
+            p->state = SLEEPING;
+            // 唤醒可能正在等待该进程的其他进程
+            wakeup(p);
+        }
+        return 0;
+    }
+
+    // 处理 SIGCONT 信号
+    if (signo == SIGCONT) {
+        // 无论进程是否处于暂停状态，都添加 SIGCONT 到pending队列
+        sigaddset(&p->signal.sigpending, signo);
+        
+        // 填充siginfo
+        p->signal.siginfos[signo].si_signo = signo;
+        p->signal.siginfos[signo].si_code = code;
+        p->signal.siginfos[signo].si_pid = curr_proc()->pid;
+        
+        // 如果进程处于暂停状态，则唤醒它
+        if (p->state == SLEEPING) {
+            p->state = RUNNABLE;
+            wakeup(p);
+        }
         return 0;
     }
 
