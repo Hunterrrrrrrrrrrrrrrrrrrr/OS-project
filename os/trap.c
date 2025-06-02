@@ -145,9 +145,21 @@ static void handle_pgfault(void) {
             return;
         }
     }
-    // otherwise, it is a page fault due to invalid address
-    infof("page fault in application, bad addr = %p, bad instruction = %p, core dumped.", r_stval(), p->trapframe->epc);
-    setkilled(p, -2);
+
+    // 修改这里: 不再直接终止进程，而是发送SIGSEGV信号
+    infof("page fault in application, bad addr = %p, bad instruction = %p", r_stval(), p->trapframe->epc);
+
+    // 填充siginfo结构体
+    p->signal.siginfos[SIGSEGV].si_signo = SIGSEGV;
+    p->signal.siginfos[SIGSEGV].si_code  = cause;
+    p->signal.siginfos[SIGSEGV].si_pid   = -1;            // 内核触发的信号
+    p->signal.siginfos[SIGSEGV].addr     = (void *)addr;  // 记录错误地址
+
+    // 添加信号到pending集
+    sigaddset(&p->signal.sigpending, SIGSEGV);
+
+    // 如果当前没有为SIGSEGV设置处理函数，将使用默认处理函数(终止进程)
+    // 这部分逻辑已经在do_signal()中处理
 }
 
 static void unknown_trap(void) {

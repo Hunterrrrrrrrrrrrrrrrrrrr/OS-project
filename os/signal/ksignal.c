@@ -28,10 +28,10 @@ int siginit(struct proc *p) {
         p->signal.sa[signo].sa_sigaction = SIG_DFL;
         sigemptyset(&p->signal.sa[signo].sa_mask);
         p->signal.sa[signo].sa_restorer = NULL;
-        
+
         // 初始化siginfo为0
         memset(&p->signal.siginfos[signo], 0, sizeof(siginfo_t));
-        p->signal.siginfos[signo].si_signo = signo; // 设置信号编号
+        p->signal.siginfos[signo].si_signo = signo;  // 设置信号编号
     }
 
     // 清空信号掩码和待处理信号集
@@ -76,7 +76,7 @@ int siginit_exec(struct proc *p) {
             p->signal.sa[signo].sa_sigaction = SIG_DFL;
             sigemptyset(&p->signal.sa[signo].sa_mask);
             p->signal.sa[signo].sa_restorer = NULL;
-            
+
             // 清除该信号的siginfo（可选但更安全）
             memset(&p->signal.siginfos[signo], 0, sizeof(siginfo_t));
             p->signal.siginfos[signo].si_signo = signo;
@@ -98,12 +98,17 @@ int do_signal(void) {
             // SIGKILL/SIGSTOP不能被捕获/忽略
             if (signo == SIGKILL || signo == SIGSTOP) {
                 if (signo == SIGSTOP) {
-                    // 暂停进程
-                    acquire(&p->lock);  // 加锁
-                    p->state = SLEEPING;
+                    // 正确实现SIGSTOP：使用sleep函数而不是直接设置状态
                     sigdelset(&p->signal.sigpending, signo);
-                    release(&p->lock);  // 解锁
-                    yield();  // 让出CPU
+
+                    // 使用sleep将进程置于睡眠状态
+                    // 使用一个特殊的sleep_chan表示进程被暂停
+                    acquire(&p->lock);
+                    p->sleep_chan = (void *)&p->signal;  // 使用signal地址作为停止标记
+                    p->state      = SLEEPING;
+                    sigdelset(&p->signal.sigpending, signo);
+                    sched();  // 调用sched切换到其他进程
+                    release(&p->lock);
                     return 0;
                 } else {
                     // SIGKILL 处理（原有代码）
@@ -114,14 +119,12 @@ int do_signal(void) {
             }
             // 处理 SIGCONT 信号
             if (signo == SIGCONT) {
-                // 如果进程处于暂停状态，则恢复运行
-                acquire(&p->lock);  // 加锁
-                if (p->state == SLEEPING) {
-                    p->state = RUNNABLE;
-                    wakeup(p);  // 唤醒进程
+                // 清除待处理标志
+                sigdelset(&p->signal.sigpending, signo);
+                // 如果进程被SIGSTOP暂停，解除睡眠状态
+                if (p->sleep_chan == (void *)&p->signal) {
+                    p->sleep_chan = NULL;
                 }
-                sigdelset(&p->signal.sigpending, signo);  // 清除待处理标志
-                release(&p->lock);  // 解锁
                 return 0;
             }
             // 忽略
@@ -164,8 +167,11 @@ void setup_signal_handler(struct proc *p, int signo, sigaction_t *act) {
     sp &= ~15ULL;
     uint64 siginfo_ptr = sp;
 
-    siginfo_t info;
-    memset(&info, 0, sizeof(siginfo_t));
+    // 修改这里：使用已经填充的siginfo而不是创建空白的
+    siginfo_t info = p->signal.siginfos[signo];
+    // 确保signo字段是正确的
+    info.si_signo = signo;
+
     acquire(&p->mm->lock);
     copy_to_user(p->mm, siginfo_ptr, (char *)&info, sizeof(siginfo_t));
     release(&p->mm->lock);
@@ -314,12 +320,12 @@ int sys_sigpending(sigset_t __user *set) {
 
 int sys_sigkill(int pid, int signo, int code) {
     // 1. 参数校验
-    if (signo < SIGMIN || signo > SIGMAX) 
+    if (signo < SIGMIN || signo > SIGMAX)
         return -1;
-    
+
     // 2. 查找目标进程
     struct proc *p = NULL;
-    
+
     // 正确遍历指针数组的方式
     for (int i = 0; pool[i] != NULL; i++) {  // 假设以NULL结尾
         if (pool[i]->pid == pid && pool[i]->state != UNUSED) {
@@ -327,8 +333,9 @@ int sys_sigkill(int pid, int signo, int code) {
             break;
         }
     }
-    
-    if (!p) return -1;  // 未找到进程
+
+    if (!p)
+        return -1;  // 未找到进程
 
     // 3. 处理特殊信号
     if (signo == SIGKILL || signo == SIGSTOP) {
@@ -336,9 +343,19 @@ int sys_sigkill(int pid, int signo, int code) {
         if (signo == SIGKILL) {
             setkilled(p, -10 - SIGKILL);
         } else if (signo == SIGSTOP) {
-            p->state = SLEEPING;
-            // 唤醒可能正在等待该进程的其他进程
-            wakeup(p);
+            // 修复SIGSTOP实现：不直接修改进程状态，而是通过信号机制
+            // 添加SIGSTOP到pending集
+            sigaddset(&p->signal.sigpending, signo);
+
+            // 填充siginfo
+            p->signal.siginfos[signo].si_signo = signo;
+            p->signal.siginfos[signo].si_code  = code;
+            p->signal.siginfos[signo].si_pid   = curr_proc()->pid;
+
+            // 唤醒进程，让它自己处理信号
+            if (p->state == SLEEPING && p->sleep_chan) {
+                wakeup(p->sleep_chan);
+            }
         }
         return 0;
     }
@@ -347,27 +364,26 @@ int sys_sigkill(int pid, int signo, int code) {
     if (signo == SIGCONT) {
         // 无论进程是否处于暂停状态，都添加 SIGCONT 到pending队列
         sigaddset(&p->signal.sigpending, signo);
-        
+
         // 填充siginfo
         p->signal.siginfos[signo].si_signo = signo;
-        p->signal.siginfos[signo].si_code = code;
-        p->signal.siginfos[signo].si_pid = curr_proc()->pid;
-        
+        p->signal.siginfos[signo].si_code  = code;
+        p->signal.siginfos[signo].si_pid   = curr_proc()->pid;
+
         // 如果进程处于暂停状态，则唤醒它
         if (p->state == SLEEPING) {
-            p->state = RUNNABLE;
-            wakeup(p);
+            wakeup(p);  // 唤醒被SIGSTOP暂停的进程
         }
         return 0;
     }
 
     // 4. 添加信号到pending集
     sigaddset(&p->signal.sigpending, signo);
-    
+
     // 5. 填充siginfo
     p->signal.siginfos[signo].si_signo = signo;
-    p->signal.siginfos[signo].si_code = code;
-    p->signal.siginfos[signo].si_pid = curr_proc()->pid;
+    p->signal.siginfos[signo].si_code  = code;
+    p->signal.siginfos[signo].si_pid   = curr_proc()->pid;
 
     // 6. 唤醒睡眠进程
     if (p->state == SLEEPING && p->sleep_chan) {
